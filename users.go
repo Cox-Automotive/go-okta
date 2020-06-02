@@ -74,7 +74,7 @@ type User struct {
 	} `json:"_links"`
 }
 
-type Groups []struct {
+type Group struct {
 	ID      string `json:"id"`
 	Profile struct {
 		Name        string `json:"name"`

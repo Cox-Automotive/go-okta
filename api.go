@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // Client to access okta
@@ -48,7 +49,7 @@ func (c *Client) Authenticate(username, password string) (*AuthnResponse, error)
 	}
 
 	var response = &AuthnResponse{}
-	err := c.call("authn", "POST", request, response)
+	err, _ := c.call("authn", "POST", request, response)
 	return response, err
 }
 
@@ -60,7 +61,7 @@ func (c *Client) Session(sessionToken string) (*SessionResponse, error) {
 	}
 
 	var response = &SessionResponse{}
-	err := c.call("sessions", "POST", request, response)
+	err, _ := c.call("sessions", "POST", request, response)
 	if err == nil {
 		c.SessionCookie = &http.Cookie{
 			Name:     "sid",
@@ -78,16 +79,38 @@ func (c *Client) Session(sessionToken string) (*SessionResponse, error) {
 func (c *Client) User(userID string) (*User, error) {
 
 	var response = &User{}
-	err := c.call("users/"+userID, "GET", nil, response)
+	err, _ := c.call("users/"+userID, "GET", nil, response)
 	return response, err
 }
 
 // Groups takes a user id and returns the groups the user belongs to
-func (c *Client) Groups(userID string) (*Groups, error) {
+func (c *Client) Groups(userID string) (*[]Group, error) {
 
-	var response = &Groups{}
-	err := c.call("users/"+userID+"/groups", "GET", nil, response)
-	return response, err
+	var response = &[]Group{}
+	var nextLink = "users/"+userID+"/groups?limit=200"
+
+	for {
+		var resp = &[]Group{}
+		err, link := c.call(nextLink, "GET", nil, resp)
+
+		if err != nil {
+			return resp, err
+		}
+
+		*response = append(*response, *resp...)
+
+		parts := strings.Split(link, ";")
+		nextLink = strings.Replace(parts[0], fmt.Sprintf("<https://%s.okta.com/api/v1/", c.org), "", -1)
+		nextLink = strings.Replace(nextLink, ">", "", -1)
+
+		if nextLink == "" {
+			break
+		}
+
+		fmt.Println("go next link")
+	}
+
+	return response, nil
 }
 
 func (c *Client) AppLinks(userID string, appName string) (*AppLinks, error) {
@@ -100,17 +123,18 @@ func (c *Client) AppLinks(userID string, appName string) (*AppLinks, error) {
 	}
 
 	var response = &AppLinks{}
-	err := c.call(u, "GET", nil, response)
+	err, _ := c.call(u, "GET", nil, response)
 	return response, err
 }
 
-func (c *Client) call(endpoint, method string, request, response interface{}) error {
+func (c *Client) call(endpoint, method string, request, response interface{}) (error, string) {
 	data, _ := json.Marshal(request)
+	link := ""
 
 	var url = "https://" + c.org + "." + c.Url + "/api/v1/" + endpoint
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(data))
 	if err != nil {
-		return err
+		return err, link
 	}
 
 	req.Header.Add("Accept", `application/json`)
@@ -124,19 +148,19 @@ func (c *Client) call(endpoint, method string, request, response interface{}) er
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return err
+		return err, link
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return err, link
 	}
 
 	if resp.StatusCode == http.StatusOK {
 		err := json.Unmarshal(body, &response)
 		if err != nil {
-			return err
+			return err, link
 		}
 	} else {
 		var errors ErrorResponse
@@ -146,8 +170,15 @@ func (c *Client) call(endpoint, method string, request, response interface{}) er
 			HTTPCode: resp.StatusCode,
 			Response: errors,
 			Endpoint: url,
+		}, link
+	}
+
+	links := resp.Header.Values("Link")
+	if links != nil {
+		if len(links) == 2 {
+			link = links[1]
 		}
 	}
 
-	return nil
+	return nil, link
 }
